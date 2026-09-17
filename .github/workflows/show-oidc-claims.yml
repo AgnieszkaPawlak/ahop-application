@@ -1,0 +1,35 @@
+name: Show OIDC claims
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  show-oidc-claims:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request OIDC token and print claims
+        env:
+          AUDIENCE: sts.amazonaws.com
+        run: |
+          set -euo pipefail
+
+          TOKEN_JSON=$(curl -sS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")
+
+          ID_TOKEN=$(echo "${TOKEN_JSON}" | jq -r .value)
+          PAYLOAD=$(echo "${ID_TOKEN}" | cut -d. -f2)
+
+          # JWT payload is base64url-encoded; pad so base64 -d can decode it.
+          MOD=$(( ${#PAYLOAD} % 4 ))
+          if [ "${MOD}" -eq 2 ]; then
+            PAYLOAD="${PAYLOAD}=="
+          elif [ "${MOD}" -eq 3 ]; then
+            PAYLOAD="${PAYLOAD}="
+          fi
+
+          echo "${PAYLOAD}" | tr '_-' '/+' | base64 -d | jq .
