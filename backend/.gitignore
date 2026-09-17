@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+
+# compiled output
+dist/
+build/
+
+# logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# tests
+coverage/
+.nyc_output/
+
+# env
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# typescript
+*.tsbuildinfo
