@@ -1,0 +1,58 @@
+name: Build and Push Images
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  FRONTEND_REPOSITORY: ahop-frontend
+  BACKEND_REPOSITORY: ahop-backend
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::664660631786:role/GitHubAhopDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push frontend
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $REGISTRY/$FRONTEND_REPOSITORY:$IMAGE_TAG \
+            ./frontend
+
+          docker push \
+            $REGISTRY/$FRONTEND_REPOSITORY:$IMAGE_TAG
+
+      - name: Build and push backend
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $REGISTRY/$BACKEND_REPOSITORY:$IMAGE_TAG \
+            ./backend
+
+          docker push \
+            $REGISTRY/$BACKEND_REPOSITORY:$IMAGE_TAG
