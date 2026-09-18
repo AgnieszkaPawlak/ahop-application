@@ -157,3 +157,65 @@ jobs:
           gh run watch "$RUN_ID" \
             --repo AgnieszkaPawlak/shop-e2e \
             --exit-status
+
+  deploy-production:
+    needs: e2e-staging
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Promote release to production
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          aws ecs describe-task-definition \
+            --task-definition ahop-production \
+            --query taskDefinition \
+            > current-prod-task.json
+
+          jq \
+            --arg FRONTEND "$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/ahop-frontend:$IMAGE_TAG" \
+            --arg BACKEND "$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/ahop-backend:$IMAGE_TAG" \
+            --arg VERSION "$IMAGE_TAG" \
+            '
+            del(
+              .taskDefinitionArn,
+              .revision,
+              .status,
+              .requiresAttributes,
+              .compatibilities,
+              .registeredAt,
+              .registeredBy
+            )
+            |
+            (.containerDefinitions[] | select(.name=="frontend").image) = $FRONTEND
+            |
+            (.containerDefinitions[] | select(.name=="backend").image) = $BACKEND
+            |
+            (.containerDefinitions[] | select(.name=="backend").environment[] |
+              select(.name=="APP_VERSION").value) = $VERSION
+            ' current-prod-task.json > new-prod-task.json
+
+          NEW_TASK_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-prod-task.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          aws ecs update-service \
+            --cluster ahop-cluster \
+            --service ahop-production \
+            --task-definition "$NEW_TASK_ARN"
+
+          aws ecs wait services-stable \
+            --cluster ahop-cluster \
+            --services ahop-production
+
+            
