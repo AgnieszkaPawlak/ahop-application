@@ -15,7 +15,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: arn:aws:iam::664660631786:role/GitHubAhopDeployRole
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: us-east-1
           role-session-name: github-ahop-test
 
