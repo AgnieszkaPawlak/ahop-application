@@ -218,4 +218,23 @@ jobs:
             --cluster ahop-cluster \
             --services ahop-production
 
+
+  smoke-production:
+    needs: deploy-production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run production smoke tests
+        env:
+          GH_TOKEN: ${{ secrets.E2E_REPO_TOKEN }}
+          BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          APP_VERSION: ${{ github.sha }}
+        run: |
+          gh workflow run e2e.yml \
+            --repo AgnieszkaPawlak/shop-e2e \
+            -f base_url="$BASE_URL" \
+            -f app_version="$APP_VERSION"
+
+          echo "Production smoke tests triggered"
+
             
