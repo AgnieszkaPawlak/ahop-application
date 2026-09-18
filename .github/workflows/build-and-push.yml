@@ -117,3 +117,43 @@ jobs:
           aws ecs wait services-stable \
             --cluster ahop-cluster \
             --services ahop-staging
+
+  e2e-staging:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger and wait for E2E tests
+        env:
+          GH_TOKEN: ${{ secrets.E2E_REPO_TOKEN }}
+          BASE_URL: ${{ vars.STAGING_BASE_URL }}
+          APP_VERSION: ${{ github.sha }}
+        run: |
+          gh workflow run e2e.yml \
+            --repo AgnieszkaPawlak/shop-e2e \
+            -f base_url="$BASE_URL" \
+            -f app_version="$APP_VERSION"
+
+          echo "Waiting for E2E workflow..."
+
+          for i in {1..30}; do
+            RUN_ID=$(gh run list \
+              --repo AgnieszkaPawlak/shop-e2e \
+              --workflow e2e.yml \
+              --limit 20 \
+              --json databaseId,displayTitle \
+              --jq ".[] | select(.displayTitle==\"E2E $APP_VERSION\") | .databaseId" \
+              | head -n1)
+
+            if [ -n "$RUN_ID" ]; then
+              break
+            fi
+
+            sleep 5
+          done
+
+          test -n "$RUN_ID"
+
+          gh run watch "$RUN_ID" \
+            --repo AgnieszkaPawlak/shop-e2e \
+            --exit-status
