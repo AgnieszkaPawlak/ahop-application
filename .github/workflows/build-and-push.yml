@@ -56,3 +56,64 @@ jobs:
 
           docker push \
             $REGISTRY/$BACKEND_REPOSITORY:$IMAGE_TAG
+
+  deploy-staging:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create new task definition revision
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          aws ecs describe-task-definition \
+            --task-definition ahop-staging \
+            --query taskDefinition \
+            > current-task.json
+
+          jq \
+            --arg FRONTEND "$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/ahop-frontend:$IMAGE_TAG" \
+            --arg BACKEND "$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/ahop-backend:$IMAGE_TAG" \
+            --arg VERSION "$IMAGE_TAG" \
+            '
+            del(
+                .taskDefinitionArn,
+                .revision,
+                .status,
+                .requiresAttributes,
+                .compatibilities,
+                .registeredAt,
+                .registeredBy
+            )
+            |
+            (.containerDefinitions[] | select(.name=="frontend").image) = $FRONTEND
+            |
+            (.containerDefinitions[] | select(.name=="backend").image) = $BACKEND
+            |
+            (.containerDefinitions[] | select(.name=="backend").environment[] |
+                select(.name=="APP_VERSION").value) = $VERSION
+            ' current-task.json > new-task.json
+
+          NEW_TASK_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "New task definition: $NEW_TASK_ARN"
+
+          aws ecs update-service \
+            --cluster ahop-cluster \
+            --service ahop-staging \
+            --task-definition "$NEW_TASK_ARN"
+
+          aws ecs wait services-stable \
+            --cluster ahop-cluster \
+            --services ahop-staging
