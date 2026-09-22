@@ -197,7 +197,7 @@ jobs:
           jq \
             --arg FRONTEND "$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/ahop-frontend:$IMAGE_TAG" \
             --arg BACKEND "$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/ahop-backend:$IMAGE_TAG" \
-            --arg VERSION "$IMAGE_TAG" \
+            --arg VERSION "BROKEN-$IMAGE_TAG" \
             '
             del(
               .taskDefinitionArn,
