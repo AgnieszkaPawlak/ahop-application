@@ -117,3 +117,196 @@ jobs:
           aws ecs wait services-stable \
             --cluster ahop-cluster \
             --services ahop-staging
+
+  e2e-staging:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger and wait for E2E tests
+        env:
+          GH_TOKEN: ${{ secrets.E2E_REPO_TOKEN }}
+          BASE_URL: ${{ vars.STAGING_BASE_URL }}
+          APP_VERSION: ${{ github.sha }}
+        run: |
+          gh workflow run e2e.yml \
+            --repo AgnieszkaPawlak/shop-e2e \
+            -f base_url="$BASE_URL" \
+            -f app_version="$APP_VERSION"
+
+          echo "Waiting for E2E workflow..."
+
+          for i in {1..30}; do
+            RUN_ID=$(gh run list \
+              --repo AgnieszkaPawlak/shop-e2e \
+              --workflow e2e.yml \
+              --limit 20 \
+              --json databaseId,displayTitle \
+              --jq ".[] | select(.displayTitle==\"E2E $APP_VERSION\") | .databaseId" \
+              | head -n1)
+
+            if [ -n "$RUN_ID" ]; then
+              break
+            fi
+
+            sleep 5
+          done
+
+          test -n "$RUN_ID"
+
+          gh run watch "$RUN_ID" \
+            --repo AgnieszkaPawlak/shop-e2e \
+            --exit-status
+
+  deploy-production:
+    needs: e2e-staging
+    runs-on: ubuntu-latest
+    environment: production
+
+    outputs:
+      previous_task_definition: ${{ steps.deploy.outputs.previous_task_definition }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Promote release to production
+        id: deploy
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          PREVIOUS_TASK=$(aws ecs describe-services \
+            --cluster ahop-cluster \
+            --services ahop-production \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          echo "Previous production task: $PREVIOUS_TASK"
+          echo "previous_task_definition=$PREVIOUS_TASK" >> "$GITHUB_OUTPUT"
+
+          aws ecs describe-task-definition \
+            --task-definition "$PREVIOUS_TASK" \
+            --query taskDefinition \
+            > current-prod-task.json
+
+          jq \
+            --arg FRONTEND "$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/ahop-frontend:$IMAGE_TAG" \
+            --arg BACKEND "$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/ahop-backend:$IMAGE_TAG" \
+            --arg VERSION "$IMAGE_TAG" \
+            '
+            del(
+              .taskDefinitionArn,
+              .revision,
+              .status,
+              .requiresAttributes,
+              .compatibilities,
+              .registeredAt,
+              .registeredBy
+            )
+            |
+            (.containerDefinitions[] | select(.name=="frontend").image) = $FRONTEND
+            |
+            (.containerDefinitions[] | select(.name=="backend").image) = $BACKEND
+            |
+            (.containerDefinitions[] | select(.name=="backend").environment[] |
+              select(.name=="APP_VERSION").value) = $VERSION
+            ' current-prod-task.json > new-prod-task.json
+
+          NEW_TASK=$(aws ecs register-task-definition \
+            --cli-input-json file://new-prod-task.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          aws ecs update-service \
+            --cluster ahop-cluster \
+            --service ahop-production \
+            --task-definition "$NEW_TASK" \
+            >/dev/null
+
+          aws ecs wait services-stable \
+            --cluster ahop-cluster \
+            --services ahop-production
+
+
+  smoke-production:
+    needs: deploy-production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger and wait for production smoke
+        env:
+          GH_TOKEN: ${{ secrets.E2E_REPO_TOKEN }}
+          BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          APP_VERSION: ${{ github.sha }}
+        run: |
+          gh workflow run e2e.yml \
+            --repo AgnieszkaPawlak/shop-e2e \
+            -f base_url="$BASE_URL" \
+            -f app_version="$APP_VERSION"
+
+          sleep 5
+
+          for i in {1..30}; do
+            RUN_ID=$(gh run list \
+              --repo AgnieszkaPawlak/shop-e2e \
+              --workflow e2e.yml \
+              --limit 20 \
+              --json databaseId,displayTitle \
+              --jq ".[] | select(.displayTitle==\"E2E $APP_VERSION\") | .databaseId" \
+              | head -n1)
+
+            if [ -n "$RUN_ID" ]; then
+              break
+            fi
+
+            sleep 5
+          done
+
+          test -n "$RUN_ID"
+
+          gh run watch "$RUN_ID" \
+            --repo AgnieszkaPawlak/shop-e2e \
+            --exit-status
+
+  rollback-production:
+    needs:
+      - deploy-production
+      - smoke-production
+
+    if: ${{ always() && needs.deploy-production.result == 'success' && needs.smoke-production.result == 'failure' }}
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Roll back production
+        env:
+          PREVIOUS_TASK: ${{ needs.deploy-production.outputs.previous_task_definition }}
+        run: |
+          echo "Rolling back to: $PREVIOUS_TASK"
+
+          test -n "$PREVIOUS_TASK"
+
+          aws ecs update-service \
+            --cluster ahop-cluster \
+            --service ahop-production \
+            --task-definition "$PREVIOUS_TASK" \
+            >/dev/null
+
+          aws ecs wait services-stable \
+            --cluster ahop-cluster \
+            --services ahop-production
+
+          echo "Rollback completed"
+
+            
