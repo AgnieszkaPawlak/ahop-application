@@ -121,8 +121,113 @@ jobs:
           docker push \
             $REGISTRY/$BACKEND_REPOSITORY:$IMAGE_TAG
 
-  deploy-staging:
-    needs: build-and-push
+  # deploy-staging:
+  #   needs: build-and-push
+  #   runs-on: ubuntu-latest
+
+  #   steps:
+  #     - name: Configure AWS credentials
+  #       uses: aws-actions/configure-aws-credentials@v5
+  #       with:
+  #         role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+  #         aws-region: ${{ env.AWS_REGION }}
+
+  #     - name: Create new task definition revision
+  #       env:
+  #         IMAGE_TAG: ${{ github.sha }}
+  #       run: |
+  #         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+  #         aws ecs describe-task-definition \
+  #           --task-definition ahop-staging \
+  #           --query taskDefinition \
+  #           > current-task.json
+
+  #         jq \
+  #           --arg FRONTEND "$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/ahop-frontend:$IMAGE_TAG" \
+  #           --arg BACKEND "$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/ahop-backend:$IMAGE_TAG" \
+  #           --arg VERSION "$IMAGE_TAG" \
+  #           '
+  #           del(
+  #               .taskDefinitionArn,
+  #               .revision,
+  #               .status,
+  #               .requiresAttributes,
+  #               .compatibilities,
+  #               .registeredAt,
+  #               .registeredBy
+  #           )
+  #           |
+  #           (.containerDefinitions[] | select(.name=="frontend").image) = $FRONTEND
+  #           |
+  #           (.containerDefinitions[] | select(.name=="backend").image) = $BACKEND
+  #           |
+  #           (.containerDefinitions[] | select(.name=="backend").environment[] |
+  #               select(.name=="APP_VERSION").value) = $VERSION
+  #           ' current-task.json > new-task.json
+
+  #         NEW_TASK_ARN=$(aws ecs register-task-definition \
+  #           --cli-input-json file://new-task.json \
+  #           --query 'taskDefinition.taskDefinitionArn' \
+  #           --output text)
+
+  #         echo "New task definition: $NEW_TASK_ARN"
+
+  #         aws ecs update-service \
+  #           --cluster ahop-cluster \
+  #           --service ahop-staging \
+  #           --task-definition "$NEW_TASK_ARN"
+
+  #         aws ecs wait services-stable \
+  #           --cluster ahop-cluster \
+  #           --services ahop-staging
+
+  # e2e-staging:
+  #   needs: deploy-staging
+  #   runs-on: ubuntu-latest
+
+  #   steps:
+  #     - name: Trigger and wait for E2E tests
+  #       env:
+  #         GH_TOKEN: ${{ secrets.E2E_REPO_TOKEN }}
+  #         BASE_URL: ${{ vars.STAGING_BASE_URL }}
+  #         APP_VERSION: ${{ github.sha }}
+  #       run: |
+  #         gh workflow run e2e.yml \
+  #           --repo AgnieszkaPawlak/shop-e2e \
+  #           -f base_url="$BASE_URL" \
+  #           -f app_version="$APP_VERSION"
+
+  #         echo "Waiting for E2E workflow..."
+
+  #         for i in {1..30}; do
+  #           RUN_ID=$(gh run list \
+  #             --repo AgnieszkaPawlak/shop-e2e \
+  #             --workflow e2e.yml \
+  #             --limit 20 \
+  #             --json databaseId,displayTitle \
+  #             --jq ".[] | select(.displayTitle==\"E2E $APP_VERSION\") | .databaseId" \
+  #             | head -n1)
+
+  #           if [ -n "$RUN_ID" ]; then
+  #             break
+  #           fi
+
+  #           sleep 5
+  #         done
+
+  #         test -n "$RUN_ID"
+
+  #         gh run watch "$RUN_ID" \
+  #           --repo AgnieszkaPawlak/shop-e2e \
+  #           --exit-status
+  deploy-nonprod:
+    needs:
+      - resolve-environment
+      - build-and-push
+
+    if: ${{ needs.resolve-environment.outputs.environment != 'production' }}
+
     runs-on: ubuntu-latest
 
     steps:
@@ -130,16 +235,23 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: us-east-1
 
-      - name: Create new task definition revision
+      - name: Deploy selected environment
         env:
+          SERVICE: ${{ needs.resolve-environment.outputs.service }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
+          CURRENT_TASK=$(aws ecs describe-services \
+            --cluster ahop-cluster \
+            --services "$SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
           aws ecs describe-task-definition \
-            --task-definition ahop-staging \
+            --task-definition "$CURRENT_TASK" \
             --query taskDefinition \
             > current-task.json
 
@@ -149,13 +261,13 @@ jobs:
             --arg VERSION "$IMAGE_TAG" \
             '
             del(
-                .taskDefinitionArn,
-                .revision,
-                .status,
-                .requiresAttributes,
-                .compatibilities,
-                .registeredAt,
-                .registeredBy
+              .taskDefinitionArn,
+              .revision,
+              .status,
+              .requiresAttributes,
+              .compatibilities,
+              .registeredAt,
+              .registeredBy
             )
             |
             (.containerDefinitions[] | select(.name=="frontend").image) = $FRONTEND
@@ -163,42 +275,58 @@ jobs:
             (.containerDefinitions[] | select(.name=="backend").image) = $BACKEND
             |
             (.containerDefinitions[] | select(.name=="backend").environment[] |
-                select(.name=="APP_VERSION").value) = $VERSION
+              select(.name=="APP_VERSION").value) = $VERSION
             ' current-task.json > new-task.json
 
-          NEW_TASK_ARN=$(aws ecs register-task-definition \
+          NEW_TASK=$(aws ecs register-task-definition \
             --cli-input-json file://new-task.json \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
 
-          echo "New task definition: $NEW_TASK_ARN"
-
           aws ecs update-service \
             --cluster ahop-cluster \
-            --service ahop-staging \
-            --task-definition "$NEW_TASK_ARN"
+            --service "$SERVICE" \
+            --task-definition "$NEW_TASK" \
+            >/dev/null
 
           aws ecs wait services-stable \
             --cluster ahop-cluster \
-            --services ahop-staging
+            --services "$SERVICE"
 
-  e2e-staging:
-    needs: deploy-staging
+
+  e2e-nonprod:
+    needs:
+      - resolve-environment
+      - deploy-nonprod
+
+    if: ${{ needs.resolve-environment.outputs.environment != 'production' }}
+
     runs-on: ubuntu-latest
 
     steps:
       - name: Trigger and wait for E2E tests
         env:
           GH_TOKEN: ${{ secrets.E2E_REPO_TOKEN }}
-          BASE_URL: ${{ vars.STAGING_BASE_URL }}
+
+          ENVIRONMENT: ${{ needs.resolve-environment.outputs.environment }}
+          BASE_URL: ${{ needs.resolve-environment.outputs.base_url }}
+
           APP_VERSION: ${{ github.sha }}
+
+          TEST_GREP: ${{ needs.resolve-environment.outputs.test_grep }}
+          TEST_GREP_INVERT: ${{ needs.resolve-environment.outputs.test_grep_invert }}
+
         run: |
           gh workflow run e2e.yml \
             --repo AgnieszkaPawlak/shop-e2e \
+            --ref main \
+            -f environment="$ENVIRONMENT" \
             -f base_url="$BASE_URL" \
-            -f app_version="$APP_VERSION"
+            -f app_version="$APP_VERSION" \
+            -f test_grep="$TEST_GREP" \
+            -f test_grep_invert="$TEST_GREP_INVERT"
 
-          echo "Waiting for E2E workflow..."
+          echo "Waiting for $ENVIRONMENT E2E..."
 
           for i in {1..30}; do
             RUN_ID=$(gh run list \
@@ -206,7 +334,7 @@ jobs:
               --workflow e2e.yml \
               --limit 20 \
               --json databaseId,displayTitle \
-              --jq ".[] | select(.displayTitle==\"E2E $APP_VERSION\") | .databaseId" \
+              --jq ".[] | select(.displayTitle==\"E2E $ENVIRONMENT $APP_VERSION\") | .databaseId" \
               | head -n1)
 
             if [ -n "$RUN_ID" ]; then
@@ -222,8 +350,13 @@ jobs:
             --repo AgnieszkaPawlak/shop-e2e \
             --exit-status
 
+
   deploy-production:
-    needs: e2e-staging
+    needs:
+      - resolve-environment
+      - build-and-push
+    
+    if: ${{ needs.resolve-environment.outputs.environment == 'production' }}
     runs-on: ubuntu-latest
     environment: production
 
@@ -299,6 +432,8 @@ jobs:
 
   smoke-production:
     needs: deploy-production
+
+    if: ${{ needs.resolve-environment.outputs.environment == 'production' }}
     runs-on: ubuntu-latest
 
     steps:
