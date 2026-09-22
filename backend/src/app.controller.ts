@@ -1,4 +1,5 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get,  InternalServerErrorException,
+} from '@nestjs/common';
 
 @Controller()
 export class AppController {
@@ -19,5 +20,10 @@ export class AppController {
     return {
       version: process.env.APP_VERSION ?? 'local',
     };
+  }
+
+  @Get('fail')
+  getFail() {
+    throw new InternalServerErrorException("Controlled production failure")
   }
 }
