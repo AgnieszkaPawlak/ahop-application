@@ -26,4 +26,4 @@ export class AppController {
   getFail() {
     throw new InternalServerErrorException("Controlled production failure")
   }
-}
+} 
