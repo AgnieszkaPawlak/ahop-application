@@ -273,4 +273,40 @@ jobs:
             --repo AgnieszkaPawlak/shop-e2e \
             --exit-status
 
+  rollback-production:
+    needs:
+      - deploy-production
+      - smoke-production
+
+    if: ${{ always() && needs.deploy-production.result == 'success' && needs.smoke-production.result == 'failure' }}
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Roll back production
+        env:
+          PREVIOUS_TASK: ${{ needs.deploy-production.outputs.previous_task_definition }}
+        run: |
+          echo "Rolling back to: $PREVIOUS_TASK"
+
+          test -n "$PREVIOUS_TASK"
+
+          aws ecs update-service \
+            --cluster ahop-cluster \
+            --service ahop-production \
+            --task-definition "$PREVIOUS_TASK" \
+            >/dev/null
+
+          aws ecs wait services-stable \
+            --cluster ahop-cluster \
+            --services ahop-production
+
+          echo "Rollback completed"
+
             
