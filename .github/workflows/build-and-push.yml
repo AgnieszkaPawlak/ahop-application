@@ -4,7 +4,10 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - dev
+      - test
+      - staging
+      - production
 
 permissions:
   id-token: write
@@ -16,7 +19,68 @@ env:
   BACKEND_REPOSITORY: ahop-backend
 
 jobs:
+  resolve-environment:
+    runs-on: ubuntu-latest
+
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+      service: ${{ steps.resolve.outputs.service }}
+      base_url: ${{ steps.resolve.outputs.base_url }}
+      test_grep: ${{ steps.resolve.outputs.test_grep }}
+      test_grep_invert: ${{ steps.resolve.outputs.test_grep_invert }}
+
+    steps:
+      - name: Resolve branch configuration
+        id: resolve
+        env:
+          DEV_URL: ${{ vars.DEV_BASE_URL }}
+          TEST_URL: ${{ vars.TEST_BASE_URL }}
+          STAGING_URL: ${{ vars.STAGING_BASE_URL }}
+          PRODUCTION_URL: ${{ vars.PRODUCTION_BASE_URL }}
+        run: |
+          case "${GITHUB_REF_NAME}" in
+
+            dev)
+              echo "environment=dev" >> "$GITHUB_OUTPUT"
+              echo "service=ahop-dev" >> "$GITHUB_OUTPUT"
+              echo "base_url=$DEV_URL" >> "$GITHUB_OUTPUT"
+              echo "test_grep=@smoke" >> "$GITHUB_OUTPUT"
+              echo "test_grep_invert=" >> "$GITHUB_OUTPUT"
+              ;;
+
+            test)
+              echo "environment=test" >> "$GITHUB_OUTPUT"
+              echo "service=ahop-test" >> "$GITHUB_OUTPUT"
+              echo "base_url=$TEST_URL" >> "$GITHUB_OUTPUT"
+              echo "test_grep=@smoke|@regression" >> "$GITHUB_OUTPUT"
+              echo "test_grep_invert=" >> "$GITHUB_OUTPUT"
+              ;;
+
+            staging)
+              echo "environment=staging" >> "$GITHUB_OUTPUT"
+              echo "service=ahop-staging" >> "$GITHUB_OUTPUT"
+              echo "base_url=$STAGING_URL" >> "$GITHUB_OUTPUT"
+              echo "test_grep=@regression|@critical" >> "$GITHUB_OUTPUT"
+              echo "test_grep_invert=" >> "$GITHUB_OUTPUT"
+              ;;
+
+            production)
+              echo "environment=production" >> "$GITHUB_OUTPUT"
+              echo "service=ahop-production" >> "$GITHUB_OUTPUT"
+              echo "base_url=$PRODUCTION_URL" >> "$GITHUB_OUTPUT"
+              echo "test_grep=@smoke" >> "$GITHUB_OUTPUT"
+              echo "test_grep_invert=@nonprod" >> "$GITHUB_OUTPUT"
+              ;;
+
+            *)
+              echo "Unsupported branch: ${GITHUB_REF_NAME}"
+              exit 1
+              ;;
+          esac
+
+
   build-and-push:
+    needs: resolve-environment
     runs-on: ubuntu-latest
 
     steps:
