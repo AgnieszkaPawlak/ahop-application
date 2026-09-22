@@ -163,6 +163,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
 
+    outputs:
+      previous_task_definition: ${{ steps.deploy.outputs.previous_task_definition }}
+
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -171,13 +174,23 @@ jobs:
           aws-region: us-east-1
 
       - name: Promote release to production
+        id: deploy
         env:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
+          PREVIOUS_TASK=$(aws ecs describe-services \
+            --cluster ahop-cluster \
+            --services ahop-production \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          echo "Previous production task: $PREVIOUS_TASK"
+          echo "previous_task_definition=$PREVIOUS_TASK" >> "$GITHUB_OUTPUT"
+
           aws ecs describe-task-definition \
-            --task-definition ahop-production \
+            --task-definition "$PREVIOUS_TASK" \
             --query taskDefinition \
             > current-prod-task.json
 
@@ -204,7 +217,7 @@ jobs:
               select(.name=="APP_VERSION").value) = $VERSION
             ' current-prod-task.json > new-prod-task.json
 
-          NEW_TASK_ARN=$(aws ecs register-task-definition \
+          NEW_TASK=$(aws ecs register-task-definition \
             --cli-input-json file://new-prod-task.json \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
@@ -212,7 +225,8 @@ jobs:
           aws ecs update-service \
             --cluster ahop-cluster \
             --service ahop-production \
-            --task-definition "$NEW_TASK_ARN"
+            --task-definition "$NEW_TASK" \
+            >/dev/null
 
           aws ecs wait services-stable \
             --cluster ahop-cluster \
